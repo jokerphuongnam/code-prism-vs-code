@@ -17,7 +17,7 @@ import {
 import { enrichWithSemanticContext, persistEnrichedGraph } from "./ollamaBridge";
 import { findSwiftFiles, getWorkspaceRoot } from "./swiftFileDiscovery";
 import { CacheManager } from "./cacheManager";
-import { detectLanguage, type PrismLang } from "./languageDetect";
+import { detectAllLanguages, detectLanguage, type PrismLang } from "./languageDetect";
 import * as sotCache from "./sotCache";
 import { loadFlatEntriesFromSoT } from "./sotLoader";
 
@@ -25,7 +25,9 @@ let activeProcess: ChildProcess | null = null;
 let lastAnalyzerBaseArgs: string[] = [];
 let outputChannel: vscode.OutputChannel;
 let semanticCancellation = { cancelled: false };
-/** Auto-detected language for the current workspace. */
+/** Auto-detected languages for the current workspace (multi-lang OK). */
+let workspaceLangs: PrismLang[] = [];
+/** Primary language (strongest signal). */
 let workspaceLang: PrismLang | null = null;
 
 function bootstrapWorkspace(
@@ -34,44 +36,63 @@ function bootstrapWorkspace(
   workspacePath: string
 ): void {
   try {
-    const detected = detectLanguage(workspacePath);
-    workspaceLang = detected.languageId;
+    const detected = detectAllLanguages(workspacePath);
+    workspaceLangs = detected.map((d) => d.languageId);
+    workspaceLang = workspaceLangs[0] ?? null;
+    const label = detected.map((d) => d.languageId).join("+");
     outputChannel.appendLine(
-      `[detect] ${path.basename(workspacePath)} → ${detected.languageId} (${detected.evidence})`
+      `[detect] ${path.basename(workspacePath)} → ${label} (${detected
+        .map((d) => `${d.languageId}:${d.evidence}`)
+        .join("; ")})`
     );
-    vscode.window.setStatusBarMessage(
-      `CodePrism: ${detected.languageId} · ${detected.evidence}`,
-      8000
-    );
+    vscode.window.setStatusBarMessage(`CodePrism: ${label}`, 8000);
 
     const mcpAutoEnable = vscode.workspace
       .getConfiguration("swiftPrism.mcp")
       .get<boolean>("autoEnable", true);
     if (mcpAutoEnable) {
-      ensureMcpConfig(context.extensionPath, workspacePath, detected.languageId);
+      // Omit CODE_PRISM_LANG when multi-lang so mcp-prism merges all caches.
+      ensureMcpConfig(
+        context.extensionPath,
+        workspacePath,
+        workspaceLangs.length === 1 ? workspaceLangs[0] : undefined
+      );
     }
 
-    const existing = sotCache.resolveExistingContext(workspacePath, detected.languageId);
-    if (existing) {
+    const merged: FlatMapEntry[] = [];
+    const multi = workspaceLangs.length > 1;
+    for (const lang of workspaceLangs) {
+      const existing = sotCache.resolveExistingContext(workspacePath, lang);
+      if (!existing) continue;
       try {
-        const entries = loadFlatEntriesFromSoT(existing);
-        viewProvider.sendMappingData(entries);
-        outputChannel.appendLine(
-          `[sot] Loaded ${entries.length} symbols from cache ${existing}`
+        const entries = loadFlatEntriesFromSoT(existing).map((e) =>
+          multi
+            ? {
+                ...e,
+                id: `${lang}::${e.id}`,
+                name: `[${lang}] ${e.name}`,
+                parents: (e.parents ?? []).map((p) => `${lang}::${p}`),
+                calls: (e.calls ?? []).map((c) => `${lang}::${c}`),
+              }
+            : e
         );
-        vscode.window.showInformationMessage(
-          `CodePrism: ${detected.languageId} · loaded ${entries.length} symbols from cache`
-        );
+        merged.push(...entries);
+        outputChannel.appendLine(`[sot] ${lang}: ${entries.length} from ${existing}`);
       } catch (err) {
-        outputChannel.appendLine(`[sot] Failed to load cache: ${err}`);
+        outputChannel.appendLine(`[sot] ${lang} load failed: ${err}`);
       }
-    } else {
-      outputChannel.appendLine(
-        `[sot] No cache yet for ${detected.languageId}. Run “Analyze Project”.`
+    }
+    if (merged.length > 0) {
+      viewProvider.sendMappingData(merged);
+      vscode.window.showInformationMessage(
+        `CodePrism: ${label} · loaded ${merged.length} symbols from cache`
       );
+    } else {
+      outputChannel.appendLine(`[sot] No cache yet for [${label}]. Run “Analyze Project”.`);
     }
   } catch (err) {
     workspaceLang = null;
+    workspaceLangs = [];
     const msg = err instanceof Error ? err.message : String(err);
     outputChannel.appendLine(`[detect] ${msg}`);
     vscode.window.showErrorMessage(`CodePrism: ${msg}`);
@@ -201,9 +222,11 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.window.showErrorMessage("CodePrism: Open a workspace folder first.");
       return;
     }
-    if (!workspaceLang) {
+    if (workspaceLangs.length === 0) {
       try {
-        workspaceLang = detectLanguage(workspaceRoot.fsPath).languageId;
+        const detected = detectAllLanguages(workspaceRoot.fsPath);
+        workspaceLangs = detected.map((d) => d.languageId);
+        workspaceLang = workspaceLangs[0] ?? null;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(`CodePrism: ${msg}`);
@@ -217,30 +240,42 @@ export function activate(context: vscode.ExtensionContext) {
     viewProvider.sendProgress({ phase: "scanning", processed: 0, total: 0 });
 
     try {
-      const lang = workspaceLang;
       const workspacePath = workspaceRoot.fsPath;
-      let entries: FlatMapEntry[];
+      const multi = workspaceLangs.length > 1;
+      const merged: FlatMapEntry[] = [];
 
-      if (lang === "swift") {
-        const binaryPath = ensureBinaryExists(context.extensionPath);
-        const outPath = sotCache.contextJsonPath(lang, workspacePath);
-        sotCache.ensureCacheDir(lang, workspacePath);
-        // Analyzer writes mapping-style JSON; also keep a copy path for cache
-        const mappingPath = outPath;
-        entries = await runSwiftAnalyzerToPath(binaryPath, workspacePath, mappingPath);
-        sotCache.writeMeta(lang, workspacePath, { symbolCount: entries.length });
-      } else {
-        entries = await runGenericBackendToCache(lang, workspacePath);
+      for (const lang of workspaceLangs) {
+        let entries: FlatMapEntry[];
+        if (lang === "swift") {
+          const binaryPath = ensureBinaryExists(context.extensionPath);
+          const outPath = sotCache.contextJsonPath(lang, workspacePath);
+          sotCache.ensureCacheDir(lang, workspacePath);
+          entries = await runSwiftAnalyzerToPath(binaryPath, workspacePath, outPath);
+          sotCache.writeMeta(lang, workspacePath, { symbolCount: entries.length });
+        } else {
+          entries = await runGenericBackendToCache(lang, workspacePath);
+        }
+        if (multi) {
+          entries = entries.map((e) => ({
+            ...e,
+            id: `${lang}::${e.id}`,
+            name: `[${lang}] ${e.name}`,
+            parents: (e.parents ?? []).map((p) => `${lang}::${p}`),
+            calls: (e.calls ?? []).map((c) => `${lang}::${c}`),
+          }));
+        }
+        merged.push(...entries);
       }
 
-      viewProvider.sendMappingData(entries);
+      viewProvider.sendMappingData(merged);
       viewProvider.sendProgress({ phase: "complete", processed: 1, total: 1 });
       vscode.window.showInformationMessage(
-        `CodePrism (${lang}): Mapped ${entries.length} symbols → system cache.`
+        `CodePrism (${workspaceLangs.join("+")}): Mapped ${merged.length} symbols → system cache.`
       );
 
-      if (lang === "swift") {
-        startBackgroundEnrichment(entries, workspacePath);
+      if (workspaceLangs.includes("swift")) {
+        const swiftEntries = merged.filter((e) => !multi || e.id.startsWith("swift::"));
+        startBackgroundEnrichment(swiftEntries, workspacePath);
       }
     } catch (err) {
       const message = logError(err, "analysis");

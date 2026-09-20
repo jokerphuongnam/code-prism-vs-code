@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.detectAllLanguages = detectAllLanguages;
 exports.detectLanguage = detectLanguage;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -64,26 +65,17 @@ const EXT_LANG = {
     m: "objc",
     mm: "objc",
 };
-/**
- * Auto-detect project language. Throws if none recognized.
- */
-function detectLanguage(projectRoot) {
+/** All languages present (score > 0), strongest first. Throws if none. */
+function detectAllLanguages(projectRoot) {
     const counts = {
-        swift: 0,
-        marlin: 0,
-        kotlin: 0,
-        js: 0,
-        rust: 0,
-        go: 0,
-        cpp: 0,
-        objc: 0,
+        swift: 0, marlin: 0, kotlin: 0, js: 0, rust: 0, go: 0, cpp: 0, objc: 0,
     };
+    const fileCounts = { ...counts };
     const markers = {};
     const bump = (lang, n, note) => {
         counts[lang] += n;
-        if (note) {
+        if (note)
             (markers[lang] ??= []).push(note);
-        }
     };
     const markerFiles = [
         ["Package.swift", "swift", 50],
@@ -98,9 +90,8 @@ function detectLanguage(projectRoot) {
         ["compile_commands.json", "cpp", 45],
     ];
     for (const [name, lang, score] of markerFiles) {
-        if (fs.existsSync(path.join(projectRoot, name))) {
+        if (fs.existsSync(path.join(projectRoot, name)))
             bump(lang, score, name);
-        }
     }
     try {
         for (const name of fs.readdirSync(projectRoot)) {
@@ -109,26 +100,46 @@ function detectLanguage(projectRoot) {
             }
         }
     }
-    catch {
-        /* ignore */
-    }
+    catch { /* ignore */ }
+    let headerCount = 0;
     walk(projectRoot, (file) => {
         const ext = path.extname(file).slice(1).toLowerCase();
+        if (ext === "h")
+            headerCount += 1;
         const lang = EXT_LANG[ext];
-        if (lang)
+        if (lang) {
             counts[lang] += 1;
+            fileCounts[lang] += 1;
+        }
     });
-    const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    const best = ranked[0];
-    if (!best || best[1] <= 0) {
+    if (counts.objc > 0 && headerCount > 0) {
+        counts.objc += Math.min(headerCount, counts.objc);
+    }
+    const results = [];
+    for (const lang of Object.keys(counts)) {
+        const score = counts[lang];
+        if (score <= 0)
+            continue;
+        const files = fileCounts[lang];
+        const notes = markers[lang] ?? [];
+        if (files === 0 && notes.length === 0)
+            continue;
+        if (files === 0 && score < 40)
+            continue;
+        const evidence = notes.length > 0
+            ? `${notes.join(", ")}${files > 0 ? ` · ${files} files` : ""}`
+            : `${files} source files`;
+        results.push({ languageId: lang, evidence, score, sourceFileCount: files });
+    }
+    results.sort((a, b) => b.score - a.score);
+    if (results.length === 0) {
         throw new Error(`Không nhận diện được ngôn ngữ trong “${path.basename(projectRoot)}”. ` +
             "Cần Swift / Marlin / Kotlin / JS·TS / Rust / Go / C++ / Objective-C.");
     }
-    const notes = markers[best[0]] ?? [];
-    const evidence = notes.length > 0
-        ? `${notes.join(", ")} · score ${best[1]}`
-        : `score ${best[1]} source files`;
-    return { languageId: best[0], evidence, score: best[1] };
+    return results;
+}
+function detectLanguage(projectRoot) {
+    return detectAllLanguages(projectRoot)[0];
 }
 function walk(dir, onFile) {
     let entries;

@@ -7,6 +7,7 @@ export interface DetectResult {
   languageId: PrismLang;
   evidence: string;
   score: number;
+  sourceFileCount: number;
 }
 
 const SKIP = new Set([
@@ -39,27 +40,17 @@ const EXT_LANG: Record<string, PrismLang> = {
   mm: "objc",
 };
 
-/**
- * Auto-detect project language. Throws if none recognized.
- */
-export function detectLanguage(projectRoot: string): DetectResult {
+/** All languages present (score > 0), strongest first. Throws if none. */
+export function detectAllLanguages(projectRoot: string): DetectResult[] {
   const counts: Record<PrismLang, number> = {
-    swift: 0,
-    marlin: 0,
-    kotlin: 0,
-    js: 0,
-    rust: 0,
-    go: 0,
-    cpp: 0,
-    objc: 0,
+    swift: 0, marlin: 0, kotlin: 0, js: 0, rust: 0, go: 0, cpp: 0, objc: 0,
   };
+  const fileCounts: Record<PrismLang, number> = { ...counts };
   const markers: Partial<Record<PrismLang, string[]>> = {};
 
   const bump = (lang: PrismLang, n: number, note?: string) => {
     counts[lang] += n;
-    if (note) {
-      (markers[lang] ??= []).push(note);
-    }
+    if (note) (markers[lang] ??= []).push(note);
   };
 
   const markerFiles: [string, PrismLang, number][] = [
@@ -75,43 +66,57 @@ export function detectLanguage(projectRoot: string): DetectResult {
     ["compile_commands.json", "cpp", 45],
   ];
   for (const [name, lang, score] of markerFiles) {
-    if (fs.existsSync(path.join(projectRoot, name))) {
-      bump(lang, score, name);
-    }
+    if (fs.existsSync(path.join(projectRoot, name))) bump(lang, score, name);
   }
-
   try {
     for (const name of fs.readdirSync(projectRoot)) {
       if (name.endsWith(".xcodeproj") || name.endsWith(".xcworkspace")) {
         bump("swift", 40, name);
       }
     }
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
 
+  let headerCount = 0;
   walk(projectRoot, (file) => {
     const ext = path.extname(file).slice(1).toLowerCase();
+    if (ext === "h") headerCount += 1;
     const lang = EXT_LANG[ext];
-    if (lang) counts[lang] += 1;
+    if (lang) {
+      counts[lang] += 1;
+      fileCounts[lang] += 1;
+    }
   });
+  if (counts.objc > 0 && headerCount > 0) {
+    counts.objc += Math.min(headerCount, counts.objc);
+  }
 
-  const ranked = (Object.entries(counts) as [PrismLang, number][]).sort((a, b) => b[1] - a[1]);
-  const best = ranked[0];
-  if (!best || best[1] <= 0) {
+  const results: DetectResult[] = [];
+  for (const lang of Object.keys(counts) as PrismLang[]) {
+    const score = counts[lang];
+    if (score <= 0) continue;
+    const files = fileCounts[lang];
+    const notes = markers[lang] ?? [];
+    if (files === 0 && notes.length === 0) continue;
+    if (files === 0 && score < 40) continue;
+    const evidence =
+      notes.length > 0
+        ? `${notes.join(", ")}${files > 0 ? ` · ${files} files` : ""}`
+        : `${files} source files`;
+    results.push({ languageId: lang, evidence, score, sourceFileCount: files });
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  if (results.length === 0) {
     throw new Error(
       `Không nhận diện được ngôn ngữ trong “${path.basename(projectRoot)}”. ` +
         "Cần Swift / Marlin / Kotlin / JS·TS / Rust / Go / C++ / Objective-C."
     );
   }
+  return results;
+}
 
-  const notes = markers[best[0]] ?? [];
-  const evidence =
-    notes.length > 0
-      ? `${notes.join(", ")} · score ${best[1]}`
-      : `score ${best[1]} source files`;
-
-  return { languageId: best[0], evidence, score: best[1] };
+export function detectLanguage(projectRoot: string): DetectResult {
+  return detectAllLanguages(projectRoot)[0];
 }
 
 function walk(dir: string, onFile: (f: string) => void): void {

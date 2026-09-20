@@ -2,18 +2,36 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { PrismLang } from "./languageDetect";
 
-/** System SoT cache — never inside the user workspace. */
+/** ~/Library/Caches/code-prism/<projectName>-<hash>/{lang}-prism/ */
 export const CACHE_ROOT = path.join(os.homedir(), "Library", "Caches", "code-prism");
 
-export function projectKey(projectRoot: string): string {
+export function sanitizeProjectName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+}
+
+export function projectHash(projectRoot: string): string {
   const real = fs.realpathSync(projectRoot);
   return crypto.createHash("sha256").update(real).digest("hex").slice(0, 16);
 }
 
-export function cacheDir(lang: PrismLang | string, projectRoot: string): string {
-  return path.join(CACHE_ROOT, lang, projectKey(projectRoot));
+export function projectSlug(projectRoot: string): string {
+  const real = fs.realpathSync(projectRoot);
+  return `${sanitizeProjectName(path.basename(real))}-${projectHash(real)}`;
+}
+
+export function langPrismFolder(lang: string): string {
+  if (lang === "objc") return "objective-c-prism";
+  if (lang.endsWith("-prism")) return lang;
+  return `${lang}-prism`;
+}
+
+export function projectKey(projectRoot: string): string {
+  return projectHash(projectRoot);
+}
+
+export function cacheDir(lang: string, projectRoot: string): string {
+  return path.join(CACHE_ROOT, projectSlug(projectRoot), langPrismFolder(lang));
 }
 
 export function contextJsonPath(lang: string, projectRoot: string): string {
@@ -40,11 +58,12 @@ export function writeMeta(
   extra: Record<string, unknown> = {}
 ): void {
   const real = fs.realpathSync(projectRoot);
-  const dir = ensureCacheDir(lang, projectRoot);
+  ensureCacheDir(lang, projectRoot);
   const meta = {
     projectRoot: real,
     language: lang,
-    projectKey: projectKey(projectRoot),
+    projectSlug: projectSlug(projectRoot),
+    projectKey: projectHash(projectRoot),
     generatedAt: new Date().toISOString(),
     sot: {
       json: contextJsonPath(lang, projectRoot),
@@ -53,20 +72,20 @@ export function writeMeta(
     ...extra,
   };
   fs.writeFileSync(metaPath(lang, projectRoot), JSON.stringify(meta, null, 2));
-  void dir;
 }
 
-/** Resolve existing SoT JSON for this workspace + language. */
 export function resolveExistingContext(
   projectRoot: string,
   lang: string
 ): string | null {
   const p = contextJsonPath(lang, projectRoot);
   if (fs.existsSync(p)) return p;
-  // legacy in-workspace (read only)
+  // legacy: code-prism/<lang>/<hash>/
+  const legacy = path.join(CACHE_ROOT, lang, projectHash(projectRoot), "prism-context.json");
+  if (fs.existsSync(legacy)) return legacy;
   for (const hidden of [".codeprism", ".swiftprism"]) {
-    const legacy = path.join(projectRoot, hidden, "prism-context.json");
-    if (fs.existsSync(legacy)) return legacy;
+    const inProj = path.join(projectRoot, hidden, "prism-context.json");
+    if (fs.existsSync(inProj)) return inProj;
   }
   return null;
 }
