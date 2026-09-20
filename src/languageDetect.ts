@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-export type PrismLang = "swift" | "marlin" | "kotlin" | "js" | "rust" | "go";
+export type PrismLang = "swift" | "marlin" | "kotlin" | "js" | "rust" | "go" | "cpp" | "objc";
 
 export interface DetectResult {
   languageId: PrismLang;
@@ -27,6 +27,16 @@ const EXT_LANG: Record<string, PrismLang> = {
   cjs: "js",
   rs: "rust",
   go: "go",
+  c: "cpp",
+  cc: "cpp",
+  cpp: "cpp",
+  cxx: "cpp",
+  hh: "cpp",
+  hpp: "cpp",
+  hxx: "cpp",
+  h: "cpp",
+  m: "objc",
+  mm: "objc",
 };
 
 /**
@@ -40,6 +50,8 @@ export function detectLanguage(projectRoot: string): DetectResult {
     js: 0,
     rust: 0,
     go: 0,
+    cpp: 0,
+    objc: 0,
   };
   const markers: Partial<Record<PrismLang, string[]>> = {};
 
@@ -59,6 +71,8 @@ export function detectLanguage(projectRoot: string): DetectResult {
     ["Application.marlin", "marlin", 50],
     ["package.json", "js", 40],
     ["tsconfig.json", "js", 45],
+    ["CMakeLists.txt", "cpp", 50],
+    ["compile_commands.json", "cpp", 45],
   ];
   for (const [name, lang, score] of markerFiles) {
     if (fs.existsSync(path.join(projectRoot, name))) {
@@ -87,7 +101,7 @@ export function detectLanguage(projectRoot: string): DetectResult {
   if (!best || best[1] <= 0) {
     throw new Error(
       `Không nhận diện được ngôn ngữ trong “${path.basename(projectRoot)}”. ` +
-        "Cần Swift / Marlin / Kotlin / JS·TS / Rust / Go."
+        "Cần Swift / Marlin / Kotlin / JS·TS / Rust / Go / C++ / Objective-C."
     );
   }
 

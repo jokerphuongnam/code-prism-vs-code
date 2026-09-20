@@ -753,12 +753,10 @@ async function runGenericBackendToCache(
   workspacePath: string
 ): Promise<FlatMapEntry[]> {
   const home = process.env.HOME || "";
-  const binName = lang === "js" ? "js-prism" : `${lang}-prism`;
-  const bin = path.join(home, "Documents", "Code", "code-prism", "backends", `${lang === "js" ? "js" : lang}-prism`, "bin", binName);
-  // repos: js-prism, marlin-prism, …
-  const repo = lang === "js" ? "js-prism" : `${lang}-prism`;
-  const binAlt = path.join(home, "Documents", "Code", "code-prism", "backends", repo, "bin", binName);
-  const binary = fs.existsSync(bin) ? bin : binAlt;
+  const repo =
+    lang === "js" ? "js-prism" : lang === "objc" ? "objective-c-prism" : `${lang}-prism`;
+  const binName = lang === "objc" ? "objective-c-prism" : `${lang === "js" ? "js" : lang}-prism`;
+  const binary = path.join(home, "Documents", "Code", "code-prism", "backends", repo, "bin", binName);
   if (!fs.existsSync(binary)) {
     throw new AnalyzerError(
       `Backend not found: ${binary}. Clone code-prism/backends/${repo}.`

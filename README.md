@@ -27,7 +27,7 @@ cp .build/release/swift-prism-analyzer ../code-prism-vs-code/bin/
 
 Backends folder: `~/Documents/Code/code-prism/backends/`.
 
-Other languages: [marlin-prism](https://github.com/jokerphuongnam/marlin-prism), [kotlin-prism](https://github.com/jokerphuongnam/kotlin-prism), [js-prism](https://github.com/jokerphuongnam/js-prism), [rust-prism](https://github.com/jokerphuongnam/rust-prism), [go-prism](https://github.com/jokerphuongnam/go-prism).
+Other languages: [marlin-prism](https://github.com/jokerphuongnam/marlin-prism), [kotlin-prism](https://github.com/jokerphuongnam/kotlin-prism), [js-prism](https://github.com/jokerphuongnam/js-prism), [rust-prism](https://github.com/jokerphuongnam/rust-prism), [go-prism](https://github.com/jokerphuongnam/go-prism), [cpp-prism](https://github.com/jokerphuongnam/cpp-prism), [objective-c-prism](https://github.com/jokerphuongnam/objective-c-prism).
 
 ## Develop
 
