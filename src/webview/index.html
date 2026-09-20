@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'unsafe-inline' {{cspSource}}; img-src {{cspSource}} data: blob: https:; connect-src data: blob:; worker-src blob:; font-src {{cspSource}} data:;">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+  </style>
+  {{cssTag}}
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    console.log('[SwiftPrism] Webview HTML loaded');
+    window.__swiftPrismErrors = [];
+    window.onerror = function(msg, src, line, col, err) {
+      var detail = (err && err.stack) ? err.stack : String(msg);
+      console.error('[SwiftPrism Webview Error]', detail);
+      window.__swiftPrismErrors.push(detail);
+    };
+    window.onunhandledrejection = function(e) {
+      var detail = e.reason ? String(e.reason.stack || e.reason) : 'Unknown rejection';
+      console.error('[SwiftPrism Unhandled Promise]', detail);
+      window.__swiftPrismErrors.push(detail);
+    };
+  </script>
+  {{scriptTag}}
+  <script>
+    if (window.__swiftPrismErrors && window.__swiftPrismErrors.length > 0 && typeof acquireVsCodeApi === 'function') {
+      try {
+        var vs = acquireVsCodeApi();
+        window.__swiftPrismErrors.forEach(function(e) {
+          vs.postMessage({ type: 'webviewError', message: e });
+        });
+      } catch(ex) {}
+    }
+  </script>
+</body>
+</html>

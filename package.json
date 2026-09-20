@@ -1,0 +1,124 @@
+{
+  "name": "swift-prism",
+  "displayName": "SwiftPrism",
+  "description": "Function-level dependency extraction and 3D visualization for Swift codebases",
+  "version": "0.3.0",
+  "publisher": "swift-prism",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Visualization"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "swiftPrismContainer",
+          "title": "SwiftPrism",
+          "icon": "resources/prism.svg"
+        }
+      ]
+    },
+    "views": {
+      "swiftPrismContainer": [
+        {
+          "id": "swiftPrismExplorer",
+          "name": "SwiftPrism Explorer",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "swiftPrism.analyzeProject",
+        "title": "SwiftPrism: Analyze Project",
+        "icon": "$(play)"
+      },
+      {
+        "command": "swiftPrism.refresh",
+        "title": "SwiftPrism: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "swiftPrism.showRawJson",
+        "title": "SwiftPrism: View Raw JSON",
+        "icon": "$(json)"
+      },
+      {
+        "command": "swiftPrism.analyzeAndShowJson",
+        "title": "SwiftPrism: Analyze & View JSON"
+      },
+      {
+        "command": "swiftPrism.clearCache",
+        "title": "SwiftPrism: Clear Cache"
+      },
+      {
+        "command": "swiftPrism.configureMCP",
+        "title": "SwiftPrism: Configure MCP Server",
+        "icon": "$(plug)"
+      }
+    ],
+    "configuration": {
+      "title": "SwiftPrism",
+      "properties": {
+        "swiftPrism.mcp.autoEnable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically write .mcp.json to the workspace root on activation so Claude Code can discover the SwiftPrism MCP server."
+        },
+        "swiftPrism.mcp.stealthMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Only look for .swiftprism/ hidden directory (no visible config files)."
+        },
+        "swiftPrism.mcp.compression": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable stealth compression — shortens common Swift terms in node_context for token savings."
+        }
+      }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "swiftPrism.analyzeProject",
+          "when": "view == swiftPrismExplorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "swiftPrism.refresh",
+          "when": "view == swiftPrismExplorer",
+          "group": "navigation@2"
+        },
+        {
+          "command": "swiftPrism.showRawJson",
+          "when": "view == swiftPrismExplorer",
+          "group": "navigation@3"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "clean": "rm -rf out dist dist-webview && rm -f ../prism-context.json",
+    "compile": "tsc -p ./ && cp -r src/webview out/webview 2>/dev/null || true",
+    "compile:webview": "cd webview && npm run build",
+    "build": "npm run clean && npm run compile && npm run compile:webview",
+    "watch": "tsc -watch -p ./",
+    "install:all": "npm install && cd webview && npm install"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "framer-motion": "^12.38.0"
+  }
+}
