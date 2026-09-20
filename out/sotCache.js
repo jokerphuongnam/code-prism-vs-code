@@ -50,6 +50,7 @@ const crypto = __importStar(require("crypto"));
 const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
+const pluginDiscovery_1 = require("./pluginDiscovery");
 /** ~/Library/Caches/code-prism/<projectName>-<hash>/{lang}-prism/ */
 exports.CACHE_ROOT = path.join(os.homedir(), "Library", "Caches", "code-prism");
 function sanitizeProjectName(name) {
@@ -64,6 +65,9 @@ function projectSlug(projectRoot) {
     return `${sanitizeProjectName(path.basename(real))}-${projectHash(real)}`;
 }
 function langPrismFolder(lang) {
+    const plugin = (0, pluginDiscovery_1.discoverPlugins)().find((p) => p.id === lang);
+    if (plugin?.cacheFolder)
+        return plugin.cacheFolder;
     if (lang === "objc")
         return "objective-c-prism";
     if (lang.endsWith("-prism"))

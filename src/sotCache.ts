@@ -2,6 +2,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { discoverPlugins } from "./pluginDiscovery";
 
 /** ~/Library/Caches/code-prism/<projectName>-<hash>/{lang}-prism/ */
 export const CACHE_ROOT = path.join(os.homedir(), "Library", "Caches", "code-prism");
@@ -21,6 +22,8 @@ export function projectSlug(projectRoot: string): string {
 }
 
 export function langPrismFolder(lang: string): string {
+  const plugin = discoverPlugins().find((p) => p.id === lang);
+  if (plugin?.cacheFolder) return plugin.cacheFolder;
   if (lang === "objc") return "objective-c-prism";
   if (lang.endsWith("-prism")) return lang;
   return `${lang}-prism`;

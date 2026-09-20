@@ -17,7 +17,8 @@ import {
 import { enrichWithSemanticContext, persistEnrichedGraph } from "./ollamaBridge";
 import { findSwiftFiles, getWorkspaceRoot } from "./swiftFileDiscovery";
 import { CacheManager } from "./cacheManager";
-import { detectAllLanguages, detectLanguage, type PrismLang } from "./languageDetect";
+import { detectAllLanguages, detectLanguage, pluginForLang, type PrismLang } from "./languageDetect";
+import { discoverPlugins } from "./pluginDiscovery";
 import * as sotCache from "./sotCache";
 import { loadFlatEntriesFromSoT } from "./sotLoader";
 
@@ -782,19 +783,15 @@ async function configureMCPForDesktop(extensionPath: string) {
   );
 }
 
-/** Run js/marlin/kotlin/rust/go backend → system cache → FlatMapEntry[]. */
+/** Run discovered non-swift backend → system cache → FlatMapEntry[]. */
 async function runGenericBackendToCache(
   lang: PrismLang,
   workspacePath: string
 ): Promise<FlatMapEntry[]> {
-  const home = process.env.HOME || "";
-  const repo =
-    lang === "js" ? "js-prism" : lang === "objc" ? "objective-c-prism" : `${lang}-prism`;
-  const binName = lang === "objc" ? "objective-c-prism" : `${lang === "js" ? "js" : lang}-prism`;
-  const binary = path.join(home, "Documents", "Code", "code-prism", "backends", repo, "bin", binName);
-  if (!fs.existsSync(binary)) {
+  const plugin = pluginForLang(lang) || discoverPlugins().find((p) => p.id === lang);
+  if (!plugin || !fs.existsSync(plugin.binaryPath)) {
     throw new AnalyzerError(
-      `Backend not found: ${binary}. Clone code-prism/backends/${repo}.`
+      `Backend plugin '${lang}' not found on this machine. Add it under code-prism/backends/*-prism.`
     );
   }
 
@@ -802,11 +799,15 @@ async function runGenericBackendToCache(
   sotCache.ensureCacheDir(lang, workspacePath);
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(binary, ["--root", workspacePath, "--out", outPath, "--lang", lang], {
-      env: { ...process.env, CODE_PRISM_LANG: lang },
-    });
+    const child = spawn(
+      plugin.binaryPath,
+      ["--root", workspacePath, "--out", outPath, "--lang", lang],
+      { env: { ...process.env, CODE_PRISM_LANG: lang } }
+    );
     let err = "";
-    child.stderr.on("data", (d) => { err += String(d); });
+    child.stderr.on("data", (d) => {
+      err += String(d);
+    });
     child.on("close", (code) => {
       if (code === 0) resolve();
       else reject(new AnalyzerError(err || `backend exit ${code}`));

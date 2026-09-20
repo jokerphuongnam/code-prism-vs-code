@@ -45,6 +45,7 @@ const ollamaBridge_1 = require("./ollamaBridge");
 const swiftFileDiscovery_1 = require("./swiftFileDiscovery");
 const cacheManager_1 = require("./cacheManager");
 const languageDetect_1 = require("./languageDetect");
+const pluginDiscovery_1 = require("./pluginDiscovery");
 const sotCache = __importStar(require("./sotCache"));
 const sotLoader_1 = require("./sotLoader");
 let activeProcess = null;
@@ -676,23 +677,20 @@ async function configureMCPForDesktop(extensionPath) {
     await vscode.env.clipboard.writeText(snippet);
     vscode.window.showInformationMessage("CodePrism: MCP config copied to clipboard (points at workspace → system cache).");
 }
-/** Run js/marlin/kotlin/rust/go backend → system cache → FlatMapEntry[]. */
+/** Run discovered non-swift backend → system cache → FlatMapEntry[]. */
 async function runGenericBackendToCache(lang, workspacePath) {
-    const home = process.env.HOME || "";
-    const repo = lang === "js" ? "js-prism" : lang === "objc" ? "objective-c-prism" : `${lang}-prism`;
-    const binName = lang === "objc" ? "objective-c-prism" : `${lang === "js" ? "js" : lang}-prism`;
-    const binary = path.join(home, "Documents", "Code", "code-prism", "backends", repo, "bin", binName);
-    if (!fs.existsSync(binary)) {
-        throw new analyzerBridge_1.AnalyzerError(`Backend not found: ${binary}. Clone code-prism/backends/${repo}.`);
+    const plugin = (0, languageDetect_1.pluginForLang)(lang) || (0, pluginDiscovery_1.discoverPlugins)().find((p) => p.id === lang);
+    if (!plugin || !fs.existsSync(plugin.binaryPath)) {
+        throw new analyzerBridge_1.AnalyzerError(`Backend plugin '${lang}' not found on this machine. Add it under code-prism/backends/*-prism.`);
     }
     const outPath = sotCache.contextJsonPath(lang, workspacePath);
     sotCache.ensureCacheDir(lang, workspacePath);
     await new Promise((resolve, reject) => {
-        const child = (0, child_process_1.spawn)(binary, ["--root", workspacePath, "--out", outPath, "--lang", lang], {
-            env: { ...process.env, CODE_PRISM_LANG: lang },
-        });
+        const child = (0, child_process_1.spawn)(plugin.binaryPath, ["--root", workspacePath, "--out", outPath, "--lang", lang], { env: { ...process.env, CODE_PRISM_LANG: lang } });
         let err = "";
-        child.stderr.on("data", (d) => { err += String(d); });
+        child.stderr.on("data", (d) => {
+            err += String(d);
+        });
         child.on("close", (code) => {
             if (code === 0)
                 resolve();
