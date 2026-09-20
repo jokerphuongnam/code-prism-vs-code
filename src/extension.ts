@@ -17,11 +17,67 @@ import {
 import { enrichWithSemanticContext, persistEnrichedGraph } from "./ollamaBridge";
 import { findSwiftFiles, getWorkspaceRoot } from "./swiftFileDiscovery";
 import { CacheManager } from "./cacheManager";
+import { detectLanguage, type PrismLang } from "./languageDetect";
+import * as sotCache from "./sotCache";
+import { loadFlatEntriesFromSoT } from "./sotLoader";
 
 let activeProcess: ChildProcess | null = null;
 let lastAnalyzerBaseArgs: string[] = [];
 let outputChannel: vscode.OutputChannel;
 let semanticCancellation = { cancelled: false };
+/** Auto-detected language for the current workspace. */
+let workspaceLang: PrismLang | null = null;
+
+function bootstrapWorkspace(
+  context: vscode.ExtensionContext,
+  viewProvider: ExplorerViewProvider,
+  workspacePath: string
+): void {
+  try {
+    const detected = detectLanguage(workspacePath);
+    workspaceLang = detected.languageId;
+    outputChannel.appendLine(
+      `[detect] ${path.basename(workspacePath)} → ${detected.languageId} (${detected.evidence})`
+    );
+    vscode.window.setStatusBarMessage(
+      `CodePrism: ${detected.languageId} · ${detected.evidence}`,
+      8000
+    );
+
+    const mcpAutoEnable = vscode.workspace
+      .getConfiguration("swiftPrism.mcp")
+      .get<boolean>("autoEnable", true);
+    if (mcpAutoEnable) {
+      ensureMcpConfig(context.extensionPath, workspacePath, detected.languageId);
+    }
+
+    const existing = sotCache.resolveExistingContext(workspacePath, detected.languageId);
+    if (existing) {
+      try {
+        const entries = loadFlatEntriesFromSoT(existing);
+        viewProvider.sendMappingData(entries);
+        outputChannel.appendLine(
+          `[sot] Loaded ${entries.length} symbols from cache ${existing}`
+        );
+        vscode.window.showInformationMessage(
+          `CodePrism: ${detected.languageId} · loaded ${entries.length} symbols from cache`
+        );
+      } catch (err) {
+        outputChannel.appendLine(`[sot] Failed to load cache: ${err}`);
+      }
+    } else {
+      outputChannel.appendLine(
+        `[sot] No cache yet for ${detected.languageId}. Run “Analyze Project”.`
+      );
+    }
+  } catch (err) {
+    workspaceLang = null;
+    const msg = err instanceof Error ? err.message : String(err);
+    outputChannel.appendLine(`[detect] ${msg}`);
+    vscode.window.showErrorMessage(`CodePrism: ${msg}`);
+    viewProvider.sendError(msg);
+  }
+}
 
 function ensureBinaryExists(extensionPath: string): string {
   const binaryPath = resolveAnalyzerBinary(extensionPath);
@@ -57,35 +113,24 @@ function logError(err: unknown, label: string): string {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-  outputChannel = vscode.window.createOutputChannel("SwiftPrism");
+  outputChannel = vscode.window.createOutputChannel("CodePrism");
   context.subscriptions.push(outputChannel);
 
   const viewProvider = new ExplorerViewProvider(context.extensionUri);
   const cache = new CacheManager(context.globalStorageUri);
 
-  // v4.0 flat-graph schema: purge all prior caches on every activation
-  const cleared = cache.clearAll();
-  if (cleared > 0) {
-    outputChannel.appendLine(`[v4.0] Cleared ${cleared} cached file(s) from globalStorageUri`);
-  }
-  context.workspaceState.keys().forEach((key) => context.workspaceState.update(key, undefined));
-  context.globalState.keys().forEach((key) => context.globalState.update(key, undefined));
-  console.log("CORE: Hierarchical Analyzer Activated — v4.0 flat-graph");
+  console.log("CodePrism activated — auto-detect language, SoT from system cache");
 
   const workspaceRoot = getWorkspaceRoot();
   if (workspaceRoot) {
-    const cleaned = cache.cleanupWorkspaceArtifacts(workspaceRoot.fsPath);
-    if (cleaned > 0) {
-      outputChannel.appendLine(`[cleanup] Removed ${cleaned} old artifact(s) from workspace root`);
-    }
+    bootstrapWorkspace(context, viewProvider, workspaceRoot.fsPath);
   }
-
-  // ── MCP Auto-Configuration ──
-  // Write .mcp.json to workspace root so Claude Code discovers the server automatically.
-  const mcpAutoEnable = vscode.workspace.getConfiguration("swiftPrism.mcp").get<boolean>("autoEnable", true);
-  if (mcpAutoEnable && workspaceRoot) {
-    ensureMcpConfig(context.extensionPath, workspaceRoot.fsPath);
-  }
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const root = getWorkspaceRoot();
+      if (root) bootstrapWorkspace(context, viewProvider, root.fsPath);
+    })
+  );
 
   // ── Fire-and-forget semantic context enrichment ──
   // Takes FlatMapEntry[] directly (already available from directScan or quick analysis).
@@ -153,33 +198,54 @@ export function activate(context: vscode.ExtensionContext) {
   const runQuickAnalysis = async () => {
     const workspaceRoot = getWorkspaceRoot();
     if (!workspaceRoot) {
-      vscode.window.showErrorMessage("SwiftPrism: Open a workspace folder first.");
+      vscode.window.showErrorMessage("CodePrism: Open a workspace folder first.");
       return;
     }
+    if (!workspaceLang) {
+      try {
+        workspaceLang = detectLanguage(workspaceRoot.fsPath).languageId;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`CodePrism: ${msg}`);
+        viewProvider.sendError(msg);
+        return;
+      }
+    }
 
-    // Cancel prior enrichment
     semanticCancellation.cancelled = true;
     semanticCancellation = { cancelled: false };
-
     viewProvider.sendProgress({ phase: "scanning", processed: 0, total: 0 });
 
     try {
-      const binaryPath = ensureBinaryExists(context.extensionPath);
-      const mappingPath = cache.resolveMappingPath(workspaceRoot.fsPath);
-      const entries = await runSwiftAnalyzerToPath(binaryPath, workspaceRoot.fsPath, mappingPath);
+      const lang = workspaceLang;
+      const workspacePath = workspaceRoot.fsPath;
+      let entries: FlatMapEntry[];
+
+      if (lang === "swift") {
+        const binaryPath = ensureBinaryExists(context.extensionPath);
+        const outPath = sotCache.contextJsonPath(lang, workspacePath);
+        sotCache.ensureCacheDir(lang, workspacePath);
+        // Analyzer writes mapping-style JSON; also keep a copy path for cache
+        const mappingPath = outPath;
+        entries = await runSwiftAnalyzerToPath(binaryPath, workspacePath, mappingPath);
+        sotCache.writeMeta(lang, workspacePath, { symbolCount: entries.length });
+      } else {
+        entries = await runGenericBackendToCache(lang, workspacePath);
+      }
 
       viewProvider.sendMappingData(entries);
       viewProvider.sendProgress({ phase: "complete", processed: 1, total: 1 });
       vscode.window.showInformationMessage(
-        `SwiftPrism: Mapped ${entries.length} symbols.`
+        `CodePrism (${lang}): Mapped ${entries.length} symbols → system cache.`
       );
 
-      // Kick off async enrichment — UI never freezes
-      startBackgroundEnrichment(entries, workspaceRoot.fsPath);
+      if (lang === "swift") {
+        startBackgroundEnrichment(entries, workspacePath);
+      }
     } catch (err) {
       const message = logError(err, "analysis");
       viewProvider.sendError(message);
-      vscode.window.showErrorMessage(`SwiftPrism: ${message}`);
+      vscode.window.showErrorMessage(`CodePrism: ${message}`);
     }
   };
 
@@ -583,43 +649,38 @@ function buildContextPrompt(nodeId: string, dependents: Record<string, string[]>
 // MCP SERVER CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Ensure .mcp.json exists in the workspace root with the SwiftPrism server config.
- * Uses a relative path to the MCP server dist — works from any machine.
- */
-function ensureMcpConfig(extensionPath: string, workspaceRoot: string) {
-  const mcpJsonPath = path.join(workspaceRoot, ".mcp.json");
-  const mcpServerJs = path.join(extensionPath, "..", "mcp-server", "dist", "server.js");
+function resolveMcpPrismServer(): string | null {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const candidates = [
+    path.join(home, "Documents", "Code", "mcp-prism", "dist", "server.js"),
+    path.resolve(__dirname, "..", "..", "mcp-prism", "dist", "server.js"),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
 
-  // Compute relative path from workspace root to the server.js
-  let serverPath: string;
-  if (fs.existsSync(mcpServerJs)) {
-    serverPath = path.relative(workspaceRoot, mcpServerJs);
-  } else {
-    // Fallback: check if mcp-server is a sibling in a monorepo
-    const monorepoServer = path.join(workspaceRoot, "mcp-server", "dist", "server.js");
-    if (fs.existsSync(monorepoServer)) {
-      serverPath = "mcp-server/dist/server.js";
-    } else {
-      outputChannel.appendLine("[mcp] MCP server dist not found — skipping .mcp.json auto-config");
-      return;
-    }
+/**
+ * Point mcp-prism at this workspace (PRISM_CWD). SoT is read from system cache.
+ */
+function ensureMcpConfig(extensionPath: string, workspaceRoot: string, lang?: string) {
+  void extensionPath;
+  const mcpJsonPath = path.join(workspaceRoot, ".mcp.json");
+  const serverPath = resolveMcpPrismServer();
+  if (!serverPath) {
+    outputChannel.appendLine(
+      "[mcp] mcp-prism dist not found — skip .mcp.json (npm run build in ~/Documents/Code/mcp-prism)"
+    );
+    return;
   }
 
-  // Build the config with environment variables for settings
-  const stealthMode = vscode.workspace.getConfiguration("swiftPrism.mcp").get<boolean>("stealthMode", false);
-  const compression = vscode.workspace.getConfiguration("swiftPrism.mcp").get<boolean>("compression", false);
-
-  const env: Record<string, string> = {};
-  if (stealthMode) env.SWIFTPRISM_MODE = "stealth";
-  if (compression) env.SWIFTPRISM_COMPRESS = "1";
+  const env: Record<string, string> = { PRISM_CWD: workspaceRoot };
+  if (lang) env.CODE_PRISM_LANG = lang;
 
   const mcpConfig: Record<string, any> = {
     mcpServers: {
-      "swift-prism": {
+      "mcp-prism": {
         command: "node",
         args: [serverPath],
-        ...(Object.keys(env).length > 0 ? { env } : {}),
+        env,
       },
     },
   };
@@ -653,36 +714,25 @@ function ensureMcpConfig(extensionPath: string, workspaceRoot: string) {
  * Generate a claude_desktop_config.json snippet and copy it to clipboard.
  */
 async function configureMCPForDesktop(extensionPath: string) {
+  void extensionPath;
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) {
-    vscode.window.showErrorMessage("SwiftPrism: Open a workspace folder first.");
+    vscode.window.showErrorMessage("CodePrism: Open a workspace folder first.");
     return;
   }
 
-  const mcpServerJs = path.join(extensionPath, "..", "mcp-server", "dist", "server.js");
-  let serverPath: string;
-  if (fs.existsSync(mcpServerJs)) {
-    serverPath = mcpServerJs; // absolute for Claude Desktop
-  } else {
-    const monorepoServer = path.join(workspaceRoot.fsPath, "mcp-server", "dist", "server.js");
-    if (fs.existsSync(monorepoServer)) {
-      serverPath = monorepoServer;
-    } else {
-      vscode.window.showErrorMessage("SwiftPrism: MCP server dist not found. Run: cd mcp-server && npm run build");
-      return;
-    }
+  const serverPath = resolveMcpPrismServer();
+  if (!serverPath) {
+    vscode.window.showErrorMessage("CodePrism: mcp-prism dist not found. Build ~/Documents/Code/mcp-prism first.");
+    return;
   }
 
-  const stealthMode = vscode.workspace.getConfiguration("swiftPrism.mcp").get<boolean>("stealthMode", false);
-  const compression = vscode.workspace.getConfiguration("swiftPrism.mcp").get<boolean>("compression", false);
-
   const env: Record<string, string> = { PRISM_CWD: workspaceRoot.fsPath };
-  if (stealthMode) env.SWIFTPRISM_MODE = "stealth";
-  if (compression) env.SWIFTPRISM_COMPRESS = "1";
+  if (workspaceLang) env.CODE_PRISM_LANG = workspaceLang;
 
   const config = {
     mcpServers: {
-      swiftprism: {
+      "mcp-prism": {
         command: "node",
         args: [serverPath],
         env,
@@ -693,8 +743,45 @@ async function configureMCPForDesktop(extensionPath: string) {
   const snippet = JSON.stringify(config, null, 2);
   await vscode.env.clipboard.writeText(snippet);
   vscode.window.showInformationMessage(
-    "SwiftPrism: MCP config copied to clipboard. Paste into ~/Library/Application Support/Claude/claude_desktop_config.json"
+    "CodePrism: MCP config copied to clipboard (points at workspace → system cache)."
   );
+}
+
+/** Run js/marlin/kotlin/rust/go backend → system cache → FlatMapEntry[]. */
+async function runGenericBackendToCache(
+  lang: PrismLang,
+  workspacePath: string
+): Promise<FlatMapEntry[]> {
+  const home = process.env.HOME || "";
+  const binName = lang === "js" ? "js-prism" : `${lang}-prism`;
+  const bin = path.join(home, "Documents", "Code", "code-prism", "backends", `${lang === "js" ? "js" : lang}-prism`, "bin", binName);
+  // repos: js-prism, marlin-prism, …
+  const repo = lang === "js" ? "js-prism" : `${lang}-prism`;
+  const binAlt = path.join(home, "Documents", "Code", "code-prism", "backends", repo, "bin", binName);
+  const binary = fs.existsSync(bin) ? bin : binAlt;
+  if (!fs.existsSync(binary)) {
+    throw new AnalyzerError(
+      `Backend not found: ${binary}. Clone code-prism/backends/${repo}.`
+    );
+  }
+
+  const outPath = sotCache.contextJsonPath(lang, workspacePath);
+  sotCache.ensureCacheDir(lang, workspacePath);
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(binary, ["--root", workspacePath, "--out", outPath, "--lang", lang], {
+      env: { ...process.env, CODE_PRISM_LANG: lang },
+    });
+    let err = "";
+    child.stderr.on("data", (d) => { err += String(d); });
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new AnalyzerError(err || `backend exit ${code}`));
+    });
+  });
+
+  sotCache.writeMeta(lang, workspacePath);
+  return loadFlatEntriesFromSoT(outPath);
 }
 
 export function deactivate() {

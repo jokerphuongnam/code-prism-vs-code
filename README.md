@@ -1,18 +1,19 @@
 # code-prism-vs-code
 
-VS Code extension for **Code Prism** — 3D graph visualization over a shared **SoT**.
+VS Code extension for **Code Prism**.
 
-This extension should treat language backends as plugins: analyze → write `<project>/.codeprism/`, then render. Prefer reading SoT over re-implementing parsers here.
+Open a workspace → extension **auto-detects language** → loads SoT from  
+`~/Library/Caches/code-prism/<lang>/<key>/` (not into the project).  
+Unknown language → error. MCP is configured to **mcp-prism** with `PRISM_CWD` = this workspace.
 
-## SoT
+## SoT (system cache)
 
 ```text
-<project>/.codeprism/
+~/Library/Caches/code-prism/<lang>/<projectKey>/
+  meta.json
   prism-context.json
   graph.sqlite
 ```
-
-Legacy: `.swiftprism/` still works if present.
 
 ## Analyzer binary (Swift)
 

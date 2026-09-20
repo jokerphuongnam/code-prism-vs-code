@@ -1,7 +1,7 @@
 {
-  "name": "swift-prism",
-  "displayName": "SwiftPrism",
-  "description": "Function-level dependency extraction and 3D visualization for Swift codebases",
+  "name": "code-prism",
+  "displayName": "CodePrism",
+  "description": "Code Prism — auto-detect language, read SoT from system cache, 3D graph + MCP",
   "version": "0.3.0",
   "publisher": "swift-prism",
   "engines": {
@@ -18,7 +18,7 @@
       "activitybar": [
         {
           "id": "swiftPrismContainer",
-          "title": "SwiftPrism",
+          "title": "CodePrism",
           "icon": "resources/prism.svg"
         }
       ]
@@ -27,7 +27,7 @@
       "swiftPrismContainer": [
         {
           "id": "swiftPrismExplorer",
-          "name": "SwiftPrism Explorer",
+          "name": "CodePrism Explorer",
           "type": "webview"
         }
       ]
